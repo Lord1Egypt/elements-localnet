@@ -87,8 +87,9 @@ synchronized, five assets discovered. See `PROJECT_STATE.md` for the live figure
   or `generated/public/assets.json`.
 - Public RPC stays forbidden. P2P stays on loopback unless the owner explicitly
   chooses `lan`.
-- Nothing has been pushed and no remote exists. Creating a remote or pushing requires
-  explicit owner authorization.
+- The Phase 2A commit is local only. Remote `origin` exists and points at
+  `https://github.com/Lord1Egypt/elements-localnet.git`, with `origin/master` still at
+  the Phase 1 initial commit. Pushing requires explicit owner authorization.
 
 ## Out of scope until a later phase
 

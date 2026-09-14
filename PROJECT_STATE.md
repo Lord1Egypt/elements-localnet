@@ -6,8 +6,10 @@
 - Elements: official `elements-23.3.4`, upstream short commit `ca17280`
 - Archive SHA-256: `a758151ace3f21008ab162067ffce9e0e526a1b5d55995e2c30d9cd7ccda41a0`
 - Host: Windows 11 WSL2, x86_64; Docker 29.7.2; Compose 5.5.1
-- Repository: local Git repository, no remote configured, nothing pushed.
-  Use `git rev-parse HEAD` for the current commit.
+- Repository: local Git repository. Remote `origin` is
+  `https://github.com/Lord1Egypt/elements-localnet.git`; `origin/master` is still at
+  the Phase 1 initial commit `587f15b`. The Phase 2A commit is **local only and has
+  not been pushed**. Use `git rev-parse HEAD` for the current commit.
 
 ## Active runtime
 
@@ -137,5 +139,7 @@ richer mempool detail, per-asset holder views, peg traffic rendering). Do **not*
 start wallet, faucet, asset-control, or node-control work; those are Phase 3 and
 Phase 4 and require authentication and stronger isolation.
 
-Nothing has been pushed. Creating a remote or pushing requires explicit owner
-authorization.
+The Phase 2A commit has not been pushed. `origin` exists and points at
+`https://github.com/Lord1Egypt/elements-localnet.git`, but `git push` requires
+explicit owner authorization — the repository is public, so pushing publishes the
+explorer source, the documentation, and the on-chain Asset IDs recorded here.

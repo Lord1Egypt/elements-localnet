@@ -97,7 +97,8 @@ Reviewed before committing. `generated/` remains ignored, with explicit belt-and
 braces entries for `generated/secrets/`, `generated/backups/`, `*.rpc`, `wallet.dat`,
 `*wallet*.backup`, `.cookie`, SQLite files, and the local Go caches. `git status` and
 `git ls-files 'generated/**'` were reviewed before the commit; no generated secret or
-wallet material is tracked.
+wallet material is tracked. The commit is local only — remote `origin` exists but was
+not pushed to.
 
 ## Not tested
 
