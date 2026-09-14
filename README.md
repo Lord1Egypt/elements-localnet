@@ -2,7 +2,7 @@
 
 # ⛓️ elements-localnet
 
-**A private, reproducible Elements blockchain on your laptop — five nodes, a block producer, and a live dashboard, in one command.**
+**A private, reproducible Elements blockchain on your laptop — five nodes, a block producer, and a real block explorer, in one command.**
 
 [![Elements Core](https://img.shields.io/badge/Elements%20Core-23.3.4-1a8fe3?style=flat-square&logo=blockchaindotcom&logoColor=white)](https://github.com/ElementsProject/elements)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose%20v2-2496ed?style=flat-square&logo=docker&logoColor=white)](https://docs.docker.com/compose/)
@@ -33,8 +33,10 @@ too shared, or too unpredictable.
 | 🧬 **Your own chain** | Custom genesis, block subsidy, and halving interval — set at creation, enforced by consensus |
 | ⛏️ **Deterministic blocks** | A producer mines on a fixed interval, or mine manually with `./manage.sh mine N` |
 | 🕸️ **Full-mesh P2P** | Every node peers with every other node; no single point of failure |
-| 📊 **Live dashboard** | Read-only Go service showing height, consensus, peers, mempool, and producer state |
-| 🔌 **External nodes welcome** | Each node publishes a P2P port so Elements-Qt or a remote node can join |
+| 🔍 **Real block explorer** | Blocks, transactions, addresses, assets, mempool and search, backed by a resumable SQLite index |
+| 📊 **Live telemetry** | Height, consensus, peers, mempool, node health and producer state on the same origin |
+| 🙈 **Honest about blinding** | Confidential amounts are shown as `Confidential`, never estimated or inferred |
+| 🔌 **External nodes welcome** | Each node publishes a P2P port (loopback by default) so Elements-Qt or a remote node can join |
 | 🔐 **Secrets stay local** | Per-node `rpcauth` hashes, scoped monitor identities, nothing sensitive in Git |
 | 📦 **Pinned & verified** | Elements release checked against a SHA-256 digest at image build |
 | 🧹 **Zero runtime deps** | Bash, Docker, OpenSSL. No Python, no Node, no package manager |
@@ -44,7 +46,7 @@ too shared, or too unpredictable.
 ```mermaid
 graph TB
     subgraph host["🖥️ Host (127.0.0.1)"]
-        DASH["📊 Dashboard<br/>:8080"]
+        DASH["🔍 Explorer + telemetry<br/>:8080"]
         EXT["💻 External node<br/>Elements-Qt"]
     end
 
@@ -55,6 +57,7 @@ graph TB
         N4["node-04<br/>validator"]
         N5["node-05<br/>validator"]
         PROD["⛏️ producer<br/>singleton lock"]
+        DB[("🗃️ explorer index<br/>SQLite · WAL")]
     end
 
     PROD -->|"generatetoaddress"| N1
@@ -70,7 +73,9 @@ graph TB
     N4 --- N5
 
     DASH -.->|"read-only RPC"| N1
-    EXT -.->|"P2P :7142-7146"| N2
+    DASH ===|"index"| DB
+    DASH -.->|"blocks, txs, mempool"| N2
+    EXT -.->|"P2P 127.0.0.1:7142-7146"| N2
 
     classDef prod fill:#1a8fe3,stroke:#0d5a94,color:#fff
     classDef val fill:#2d3748,stroke:#1a202c,color:#fff
@@ -78,6 +83,7 @@ graph TB
     class N1 prod
     class N2,N3,N4,N5 val
     class PROD,DASH,EXT svc
+    class DB val
 ```
 
 **`node-01`** is the only block-producing node. It is wallet-capable for deliberate
@@ -86,8 +92,13 @@ reward operations but normally runs with no wallet loaded.
 **`node-03`–`node-05`** are unpruned validators with wallet RPC disabled.
 **`producer`** holds a shared singleton lock, reads one *public* payout address and an
 RPC credential, and calls `generatetoaddress` on node-01. It never sees a key.
-**`network-status`** polls every node concurrently with 2-second deadlines and serves
-read-only HTTP. It has no wallet, no database, no control API, and no Docker socket.
+**`explorer`** does two jobs behind one origin. It polls every node concurrently with
+2-second deadlines for live telemetry, and it runs a resumable incremental indexer
+against `node-02` that writes blocks, transactions, inputs, outputs, issuances,
+assets and address history into a SQLite database in its own named volume. It has no
+wallet, no wallet RPC, no control API, and no Docker socket. See
+[docs/EXPLORER_ARCHITECTURE.md](docs/EXPLORER_ARCHITECTURE.md) and
+[docs/EXPLORER_SCHEMA.md](docs/EXPLORER_SCHEMA.md).
 
 ## Quick start
 
@@ -99,16 +110,33 @@ cd elements-localnet
 
 Then open **<http://127.0.0.1:8080>**.
 
+Run on a terminal with no arguments, `setup-network.sh` walks through the network
+name, node count, block interval, subsidy, halving interval, automatic production,
+topology, external peer access, P2P exposure, host ports, and payout choice, then
+prints a summary and asks for confirmation before it changes anything.
+
 <details>
 <summary><b>Non-interactive setup</b></summary>
 
+Passing any flag selects non-interactive mode, and a non-terminal stdin does too, so
+CI never blocks on a prompt. `./setup-network.sh --help` documents every option.
+
 ```bash
 ./setup-network.sh \
+  --network-name elements-localnet \
   --nodes 5 \
+  --topology mesh \
   --block-reward-sats 5000000000 \
   --halving-interval 210000 \
   --block-interval 60 \
-  --auto-mine yes
+  --auto-mine yes \
+  --external-peers yes \
+  --p2p-exposure localhost \
+  --p2p-port-base 7142 \
+  --rpc-port-base 7041 \
+  --dashboard-port 8080 \
+  --new-payout-wallet \
+  --non-interactive --yes
 ```
 
 </details>
@@ -122,8 +150,10 @@ Then open **<http://127.0.0.1:8080>**.
 | Halving interval | `210000` blocks | |
 | Block interval | `60` s | Change anytime with `./manage.sh producer interval N` |
 | RPC ports | `7041`+ | Bound to `127.0.0.1` only |
-| P2P ports | `7142`+ | Bound to `0.0.0.0` so external nodes can peer |
-| Dashboard | `8080` | Bound to `127.0.0.1` only |
+| P2P ports | `7142`+ | Bound to `127.0.0.1` only; `--p2p-exposure lan` opts in to all interfaces |
+| P2P exposure | `localhost` | `localhost`, `lan`, or `disabled` |
+| Topology | `mesh` | `mesh` or `seed` |
+| Explorer | `8080` | Bound to `127.0.0.1` only |
 
 Credentials are written under the git-ignored `generated/secrets/` directory and are
 never printed to the terminal.
@@ -136,7 +166,9 @@ never printed to the terminal.
 ## Connecting an external node
 
 Every node publishes its P2P listener on the host, so a desktop wallet or a node on
-another machine can join the network as a real peer.
+another machine can join the network as a real peer. By default those ports bind to
+`127.0.0.1` only. Choose `--p2p-exposure lan` deliberately if a peer on another
+machine needs them, or `disabled` to publish no P2P port at all.
 
 | Host port | Node | | Host port | Node |
 |---:|---|---|---:|---|
@@ -174,9 +206,14 @@ rpcport=18885
 ```
 
 Adjust `con_blocksubsidy` and `con_nsubsidyhalvinginterval` if you changed them at
-setup. On Windows this file goes in `%APPDATA%\Elements\elements.conf`; when the nodes
-run under WSL2, `127.0.0.1` works thanks to WSL's localhost forwarding — otherwise use
-the address from `wsl hostname -I`.
+setup. On Windows this file goes in `%APPDATA%\Elements\elements.conf`.
+
+With the default loopback exposure and the nodes running under WSL2, Windows
+`127.0.0.1:7142`–`7146` reaches them through WSL's localhost forwarding; this was
+verified with Elements-Qt connecting to all five nodes. If your host cannot forward
+localhost into WSL, use the WSL IP from `wsl hostname -I` in the `addnode` lines
+rather than switching the published bind address to every interface. Only fall back
+to `--p2p-exposure lan` when a peer on a *different machine* must connect.
 
 ## Management
 
@@ -188,14 +225,23 @@ the address from `wsl hostname -I`.
 ./manage.sh logs node-02            # follow one node
 ./manage.sh producer start|stop|status
 ./manage.sh producer interval 60    # retune cadence without restarting nodes
+./manage.sh explorer status         # container state plus indexer height, lag, schema
+./manage.sh explorer logs
+./manage.sh explorer restart
+./manage.sh explorer backup         # consistent SQLite copy into generated/backups/
+./manage.sh explorer reindex --yes-i-understand
 ./manage.sh wallet load|unload|status
 ./manage.sh start|stop|restart      # volumes and chain state always preserved
 ./manage.sh verify [--acceptance]
 ```
 
-`producer interval` persists the value, regenerates only Compose and the dashboard
-inventory, and recreates only the producer and status containers — nodes and
+`producer interval` persists the value, regenerates only Compose and the explorer
+inventory, and recreates only the producer and explorer containers — nodes and
 blockchain volumes are untouched.
+
+`explorer reindex` prints the exact Docker volume it will delete, then deletes only
+that rebuildable index and rebuilds it from genesis. Elements node volumes, chain
+data, wallets, credentials and `generated/public/assets.json` are never touched.
 
 <details>
 <summary><b>Destroying a network</b></summary>
@@ -210,7 +256,12 @@ unless you backed the data up separately.
 
 </details>
 
-## Dashboard & API
+## Explorer, telemetry & API
+
+Everything is served from one origin, **<http://127.0.0.1:8080>**: Overview, Blocks,
+Transactions, Assets, Mempool, Nodes, plus block, transaction, address and asset
+detail pages and a global search. The UI is embedded in the binary — no CDN, no
+Node.js runtime, no framework needed at runtime.
 
 Nodes are classified `HEALTHY`, `SYNCING`, `DIVERGED`, `FORKED`, `STALE`, `OFFLINE`,
 or `ERROR`. Canonical selection uses the most common height/hash pair; equal-height
@@ -219,18 +270,67 @@ signed-chain forks.
 
 ```text
 GET /healthz
+GET /readyz
 GET /api/v1/network
 GET /api/v1/nodes
 GET /api/v1/nodes/{id}
 GET /api/v1/topology
 GET /api/v1/producer
 GET /api/v1/economics
+
+GET /api/v1/explorer/status
+GET /api/v1/explorer/overview
+GET /api/v1/blocks?limit=&before=
+GET /api/v1/blocks/{height-or-hash}?limit=&offset=
+GET /api/v1/blocks/{height-or-hash}/raw
+GET /api/v1/transactions?limit=
+GET /api/v1/transactions/{txid}
+GET /api/v1/transactions/{txid}/raw
+GET /api/v1/addresses/{address}?limit=&offset=
+GET /api/v1/addresses/{address}/utxos?limit=&offset=
+GET /api/v1/assets?limit=&offset=
+GET /api/v1/assets/{asset-id}?limit=&offset=
+GET /api/v1/assets/{asset-id}/transactions?limit=&offset=
+GET /api/v1/mempool?limit=&offset=
+GET /api/v1/search?q=
 ```
 
-There is no generic RPC proxy. Each node has a dedicated monitor identity restricted
-by Elements `rpcwhitelist` to exactly: `getblockchaininfo`, `getnetworkinfo`,
-`getmempoolinfo`, `getpeerinfo`, `getconnectioncount`, `getchaintips`,
-`getblockheader`, `getmininginfo`.
+Every list endpoint is paginated with a hard maximum of 100 records per request and
+an offset ceiling; oversized limits are clamped and invalid ones rejected with a
+structured error. Errors are sanitized codes — never an RPC URL, credential, file
+path, SQL message, or Go stack trace.
+
+There is no generic RPC proxy. Each node carries two scoped identities restricted by
+Elements `rpcwhitelist`:
+
+- **monitor** — `getblockchaininfo`, `getnetworkinfo`, `getmempoolinfo`,
+  `getpeerinfo`, `getconnectioncount`, `getchaintips`, `getblockheader`,
+  `getmininginfo`
+- **explorer** — `getblockchaininfo`, `getsidechaininfo`, `getblockhash`, `getblock`,
+  `getblockheader`, `getrawtransaction`, `getrawmempool`, `getmempoolinfo`,
+  `getmempoolentry`, `getchaintips`
+
+### Confidential data
+
+The explorer never invents or estimates a blinded value.
+
+| On chain | Shown as |
+|---|---|
+| Blinded amount | `Confidential`, with the value commitment in the advanced section |
+| Blinded asset | `Confidential commitment`, with the asset commitment in the advanced section |
+| Confidential issuance | `Supply: Not publicly verifiable` and `Issuance: Confidential` |
+| Output script | The derived **unconfidential script address**, labelled as such |
+
+A confidential address supplied by a sender is not recorded on chain, so an address
+page never claims to show one. A supply figure reported by a wallet owner is a claim,
+not proof, and is not presented as consensus data.
+
+### Asset metadata
+
+`generated/public/assets.json` holds operator-supplied names, tickers, descriptions,
+decimals, logo paths, websites and test/official status, keyed by Asset ID. Start
+from [`config/assets.example.json`](config/assets.example.json). It is descriptive
+labelling only; the explorer always shows the on-chain issuance facts separately.
 
 ## Wallet behavior
 
@@ -262,12 +362,16 @@ Allocate enough Docker memory for five Elements nodes and their default caches.
 ## Security notes
 
 - This is a private development chain, not a public-network security design.
-- RPC ports and the dashboard bind to `127.0.0.1`. P2P ports bind to `0.0.0.0` so
-  external nodes can peer — firewall them if the host is on an untrusted network.
+- RPC ports, P2P ports and the explorer all bind to `127.0.0.1` by default. Public
+  RPC is never published. `--p2p-exposure lan` is the only way to reach every host
+  interface, and it warns before applying.
 - Generated configs contain only hashed `rpcauth` values. Raw credentials and the
   payout backup are git-ignored and stored with restrictive modes.
-- The status service holds monitor credentials only. It never calls wallet RPC,
-  accepts RPC method input, or mounts `/var/run/docker.sock`.
+- The explorer holds monitor and explorer credentials only, both mounted read-only.
+  It never calls wallet RPC, accepts RPC method input, mounts a wallet file, or
+  mounts `/var/run/docker.sock`. It runs as a non-root user with `cap_drop: ALL`,
+  `no-new-privileges`, a read-only root filesystem, and one writable mount for its
+  rebuildable index.
 - Never run `invalidateblock` experiments against these volumes — use a disposable
   Compose project with separate volumes.
 - Do not use this chain for assets with real value.
@@ -277,7 +381,10 @@ Allocate enough Docker memory for five Elements nodes and their default caches.
 | Symptom | Fix |
 |---|---|
 | Docker unavailable | Confirm `docker info` and `docker compose version` work in the same shell |
-| Port conflict | Free `7041`–`7040+N`, `7142`–`7141+N`, and `8080` |
+| Port conflict | Setup detects it and refuses before changing the runtime. Free `7041`–`7040+N`, `7142`–`7141+N`, and `8080` |
+| Explorer shows "Indexing…" | Normal on a fresh index; the UI stays usable. `./manage.sh explorer status` shows height and lag |
+| Explorer index looks wrong | `./manage.sh explorer reindex --yes-i-understand` rebuilds it from genesis |
+| Windows Elements-Qt will not peer | Confirm WSL localhost forwarding, or use the `wsl hostname -I` address in `addnode` |
 | Node unhealthy | `./manage.sh logs node-01` and `./manage.sh status` |
 | Peers slow after a raw Compose restart | Use `./manage.sh restart`; `addnode` retries on its own timer |
 | External node won't peer | Consensus params differ — compare against `generated/nodes/node-01/elements.conf` |
@@ -291,6 +398,9 @@ Allocate enough Docker memory for five Elements nodes and their default caches.
 | [ROADMAP.md](ROADMAP.md) | Planned phases |
 | [ACCEPTANCE_TEST_REPORT.md](ACCEPTANCE_TEST_REPORT.md) | The exact tested baseline |
 | [UPSTREAM.md](UPSTREAM.md) | Pinned Elements release and verification |
+| [docs/EXPLORER_ARCHITECTURE.md](docs/EXPLORER_ARCHITECTURE.md) | Explorer service, indexer, reorg handling, security posture |
+| [docs/EXPLORER_SCHEMA.md](docs/EXPLORER_SCHEMA.md) | Index schema, migrations, and query patterns |
+| [PROJECT_STATE.md](PROJECT_STATE.md) | Current runtime state and exact resume point |
 
 ## License
 

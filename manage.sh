@@ -7,7 +7,11 @@ COMPOSE_FILE="${ROOT_DIR}/compose.yaml"
 [[ -f "${ENV_FILE}" && -f "${COMPOSE_FILE}" ]] || { echo "Network is not configured. Run ./setup-network.sh first." >&2; exit 1; }
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
-VOLUME_NAMESPACE="${VOLUME_NAMESPACE:-elements-localnet}"
+NETWORK_NAME="${NETWORK_NAME:-elements-localnet}"
+VOLUME_NAMESPACE="${VOLUME_NAMESPACE:-${NETWORK_NAME}}"
+DASHBOARD_HOST_PORT="${DASHBOARD_HOST_PORT:-8080}"
+EXPLORER_DB_VOLUME="${VOLUME_NAMESPACE}-explorer-db"
+BACKUP_DIR="${ROOT_DIR}/generated/backups"
 COMPOSE=(docker compose -f "${COMPOSE_FILE}")
 CLI=(elements-cli -chain=elements -datadir=/data -conf=/config/elements.conf)
 
@@ -18,6 +22,7 @@ Usage: ./manage.sh COMMAND [ARGS]
   mine N
   logs node-NN
   producer start|stop|status|interval SECONDS
+  explorer status|logs|restart|backup|reindex --yes-i-understand
   wallet load|unload|status
   destroy --yes-i-understand
 EOF
@@ -35,7 +40,7 @@ rpc() {
 }
 
 producer_running() {
-  [[ "$(docker inspect --format '{{.State.Running}}' elements-localnet-producer 2>/dev/null || true)" == "true" ]]
+  [[ "$(docker inspect --format '{{.State.Running}}' "${NETWORK_NAME}-producer" 2>/dev/null || true)" == "true" ]]
 }
 
 command="${1:-}"
@@ -95,19 +100,67 @@ case "${command}" in
         "${ROOT_DIR}/scripts/generate-inventory.sh"
         "${ROOT_DIR}/scripts/generate-compose.sh"
         "${COMPOSE[@]}" config --quiet
-        "${COMPOSE[@]}" up -d --no-deps --force-recreate network-status
+        "${COMPOSE[@]}" up -d --no-deps --force-recreate explorer
         if [[ "${was_running}" == "yes" ]]; then
           "${COMPOSE[@]}" --profile producer up -d --no-deps --force-recreate producer
         else
           "${COMPOSE[@]}" --profile producer rm -sf producer >/dev/null 2>&1 || true
           "${COMPOSE[@]}" --profile producer create producer >/dev/null
         fi
-        effective="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' elements-localnet-producer | awk -F= '$1 == "BLOCK_INTERVAL" {print $2}')"
+        effective="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${NETWORK_NAME}-producer" | awk -F= '$1 == "BLOCK_INTERVAL" {print $2}')"
         [[ "${effective}" == "${new_interval}" ]] || { echo "Interval update failed: effective value is ${effective:-unknown}." >&2; exit 1; }
         echo "Producer interval changed from ${old_interval}s to ${new_interval}s; Elements nodes and blockchain volumes were not restarted."
         echo "Effective producer interval: ${effective}s"
         ;;
       *) echo "producer expects start, stop, status, or interval SECONDS." >&2; exit 2 ;;
+    esac
+    ;;
+  explorer)
+    action="${2:-status}"
+    case "${action}" in
+      status)
+        "${COMPOSE[@]}" ps explorer
+        if command -v curl >/dev/null; then
+          curl -fsS "http://127.0.0.1:${DASHBOARD_HOST_PORT}/api/v1/explorer/status" || {
+            echo "The explorer API did not answer on 127.0.0.1:${DASHBOARD_HOST_PORT}." >&2
+            exit 1
+          }
+          echo
+        else
+          echo "Install curl to read http://127.0.0.1:${DASHBOARD_HOST_PORT}/api/v1/explorer/status"
+        fi
+        ;;
+      logs) "${COMPOSE[@]}" logs --tail=200 -f explorer ;;
+      restart) "${COMPOSE[@]}" restart explorer ;;
+      backup)
+        mkdir -p "${BACKUP_DIR}"
+        stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+        container_path="/var/lib/elements-explorer/backup-${stamp}.db"
+        host_path="${BACKUP_DIR}/explorer-${stamp}.db"
+        # VACUUM INTO writes a consistent copy while the indexer keeps running.
+        "${COMPOSE[@]}" exec -T explorer /usr/local/bin/explorer -backup "${container_path}"
+        docker cp "${NETWORK_NAME}-explorer:${container_path}" "${host_path}"
+        "${COMPOSE[@]}" exec -T explorer /usr/local/bin/explorer -remove-backup "${container_path}"
+        chmod 600 "${host_path}"
+        echo "Wrote ${host_path}"
+        ;;
+      reindex)
+        [[ "${3:-}" == "--yes-i-understand" ]] || {
+          echo "Destructive command refused. Exact required form:" >&2
+          echo "  ./manage.sh explorer reindex --yes-i-understand" >&2
+          exit 2
+        }
+        echo "This deletes only the rebuildable explorer index:"
+        echo "  Docker volume: ${EXPLORER_DB_VOLUME}"
+        echo "Elements node volumes, chain data, wallets, credentials and generated/public/assets.json are untouched."
+        "${COMPOSE[@]}" stop explorer
+        "${COMPOSE[@]}" rm -f explorer >/dev/null
+        docker volume rm "${EXPLORER_DB_VOLUME}" >/dev/null
+        docker volume create --label "com.docker.compose.project=${NETWORK_NAME}" --label com.docker.compose.volume=explorer-db "${EXPLORER_DB_VOLUME}" >/dev/null
+        "${COMPOSE[@]}" up -d explorer
+        echo "The explorer index was deleted and is rebuilding from genesis."
+        ;;
+      *) echo "explorer expects status, logs, restart, backup, or reindex --yes-i-understand." >&2; exit 2 ;;
     esac
     ;;
   wallet)
@@ -124,7 +177,7 @@ case "${command}" in
     ;;
   start)
     nodes=(); for ((i = 1; i <= NODE_COUNT; i++)); do nodes+=("$(printf 'node-%02d' "${i}")"); done
-    "${COMPOSE[@]}" up -d "${nodes[@]}" network-status
+    "${COMPOSE[@]}" up -d "${nodes[@]}" explorer
     if [[ "${AUTO_MINE}" == "yes" ]]; then "${COMPOSE[@]}" --profile producer up -d producer; fi
     ;;
   stop)
@@ -150,8 +203,9 @@ case "${command}" in
     for ((i = 1; i <= NODE_COUNT; i++)); do printf '  %s-node-%02d-data\n' "${VOLUME_NAMESPACE}" "${i}"; done
     echo "  ${VOLUME_NAMESPACE}-producer-lock"
     echo "  ${VOLUME_NAMESPACE}-producer-status"
+    echo "  ${EXPLORER_DB_VOLUME}"
     "${COMPOSE[@]}" --profile producer down --volumes --remove-orphans
-    volumes=("${VOLUME_NAMESPACE}-producer-lock" "${VOLUME_NAMESPACE}-producer-status")
+    volumes=("${VOLUME_NAMESPACE}-producer-lock" "${VOLUME_NAMESPACE}-producer-status" "${EXPLORER_DB_VOLUME}")
     for ((i = 1; i <= NODE_COUNT; i++)); do volumes+=("$(printf '%s-node-%02d-data' "${VOLUME_NAMESPACE}" "${i}")"); done
     docker volume rm "${volumes[@]}"
     find "${ROOT_DIR}/generated" -mindepth 1 ! -name .gitkeep -depth -delete

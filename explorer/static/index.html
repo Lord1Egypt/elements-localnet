@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>elements-localnet explorer</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23101720'/%3E%3Cpath d='M9 11h14M9 16h10M9 21h14' stroke='%2349d6d0' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="/" data-link>
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-text">
+          <strong id="brand-name">elements-localnet</strong>
+          <small>read-only explorer</small>
+        </span>
+      </a>
+
+      <form class="search" id="search-form" role="search">
+        <label class="sr-only" for="search-input">Search the chain</label>
+        <input id="search-input" name="q" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Block height, block hash, transaction ID, Asset ID, or address">
+        <button type="submit">Search</button>
+      </form>
+
+      <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+        <span class="sr-only">Toggle navigation</span><span aria-hidden="true">☰</span>
+      </button>
+    </div>
+
+    <nav class="primary-nav" id="primary-nav" aria-label="Primary">
+      <div class="shell nav-inner">
+        <a href="/" data-link data-nav="overview">Overview</a>
+        <a href="/blocks" data-link data-nav="blocks">Blocks</a>
+        <a href="/transactions" data-link data-nav="transactions">Transactions</a>
+        <a href="/assets" data-link data-nav="assets">Assets</a>
+        <a href="/mempool" data-link data-nav="mempool">Mempool</a>
+        <a href="/nodes" data-link data-nav="nodes">Nodes</a>
+      </div>
+    </nav>
+
+    <div class="sync-strip" id="sync-strip" hidden>
+      <div class="shell sync-inner">
+        <span class="sync-dot" aria-hidden="true"></span>
+        <p id="sync-message">Indexing…</p>
+        <div class="sync-track"><div class="sync-bar" id="sync-bar"></div></div>
+        <span id="sync-percent" class="sync-percent">0%</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="shell" tabindex="-1">
+    <div id="view" aria-live="polite" aria-busy="true">
+      <p class="state state-loading">Loading…</p>
+    </div>
+  </main>
+
+  <footer class="shell site-footer">
+    <p>Read-only explorer · no wallet access, no control API, no private key handling.</p>
+    <p id="footer-meta"></p>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

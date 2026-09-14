@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "_comment": "Descriptive labels for issued assets. Copy to generated/public/assets.json and edit. This file is never consensus data: the explorer always shows on-chain issuance facts separately, and an asset whose issued amount is blinded is reported as 'Supply: Not publicly verifiable' no matter what is written here.",
+  "assets": [
+    {
+      "assetId": "0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "Example Test Asset",
+      "ticker": "EXMPL",
+      "description": "Replace this entry with the assets issued on your network.",
+      "decimals": 8,
+      "logoPath": "",
+      "website": "",
+      "status": "test"
+    }
+  ]
+}

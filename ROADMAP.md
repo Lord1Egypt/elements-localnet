@@ -6,13 +6,27 @@ Private generated Elements network, one walletless scheduled producer, archive
 and validator roles, safe payout bootstrap/backup, management scripts, runtime
 verification, and a read-only network status dashboard.
 
-## Phase 2 — indexer and Elements block explorer
+## Phase 2A — read-only Elements block explorer (complete)
 
-Add an Elements-compatible indexer/explorer backed by the dedicated archival
-RPC node. Do not fold explorer transaction/address behavior into
-`network-status`.
+`network-status` became the unified `explorer` service: one Go binary, one image,
+one origin at <http://127.0.0.1:8080>. A resumable, reorg-aware incremental indexer
+reads from the archival `node-02` and writes blocks, transactions, inputs, outputs,
+issuances, assets, address history and mempool into a SQLite index in its own named
+volume. The browser application adds Overview, Blocks, Transactions, Assets,
+Mempool, Nodes, detail pages and global search, with confidential values reported
+honestly and never estimated. P2P publishing moved to loopback by default, and
+`setup-network.sh` gained a guided wizard that keeps full non-interactive support.
 
-Phase 2 remains explicitly unauthorized until the user approves it.
+Out of scope in 2A and still unimplemented: sending transactions, wallet loading or
+creation from the browser, private key handling, a faucet, `issueasset` or
+reissuance controls, browser-based node lifecycle, a Docker control API, public
+deployment, rebranding, and consensus changes.
+
+## Phase 2B — explorer depth (not started)
+
+Charts and history series, richer mempool detail, per-asset holder views, an
+optional export API, and peg-in/peg-out rendering validated against real peg
+traffic.
 
 ## Phase 3 — control dashboard and localhost controller API
 

@@ -1,148 +1,108 @@
-# Phase 1 acceptance test report
+# Acceptance test report — Phase 2A (read-only Elements block explorer)
 
-Date: 2026-09-14 (Europe/Istanbul)
-
-## Tested build
-
-- Host: Windows 11 + WSL2, x86_64, kernel
-  `6.6.87.2-microsoft-standard-WSL2`
-- Docker Engine: `29.7.2`, build `a7dcaa6`
-- Docker Compose: `v5.5.1`
-- Elements: official `v23.3.4`, release tag `elements-23.3.4`, upstream short
-  commit `ca17280`
-- Elements archive SHA-256:
+- Date: 2026-09-15 (Europe/Istanbul)
+- Host: Windows 11 WSL2, x86_64; Docker 29.7.2; Compose 5.5.1
+- Elements Core `23.3.4`, archive SHA-256
   `a758151ace3f21008ab162067ffce9e0e526a1b5d55995e2c30d9cd7ccda41a0`
-- Debian base index digest:
-  `sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171`
-- Go builder index digest:
-  `sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1`
-- Local image IDs at the recorded build:
-  - node: `sha256:63dc36b42fa6b516176d866bc5f62648cc9d8c2b667d51f08091d695417cd5d8`
-  - producer: `sha256:265878f9fdf0cc786463c114f633867e6ddca51f05e921f556f8a50c5b3995fe`
-  - network-status: `sha256:e30f3605001fd2c22a009c63897a8a17590b27589ccff2b3405e55e31f700c57`
+- Explorer image `elements-localnet-explorer:phase2a`, local ID
+  `sha256:91da3960df0ce1df3fdf178499a4bc1de16b36dc1ff0445a8c488ea3969f89f1`
+- Index schema version `1`
+- Chain height during testing: 28,960 → 28,973
 
-Local image IDs may change after a source rebuild; the upstream inputs remain
-digest/checksum pinned.
+The Phase 1.1 baseline was preserved throughout. The chain was never reset, no
+invalidation experiment was run, and the 20,000-block test was not repeated.
 
-## Exact commands
+## Result summary
 
-```bash
-./setup-network.sh --nodes 3 --block-reward-sats 5000000000 \
-  --halving-interval 210000 --block-interval 60 --auto-mine yes
-(cd network-status && GOTOOLCHAIN=local \
-  GOCACHE=/tmp/elements-localnet-gocache go test ./...)
-./tests/static-checks.sh
-./manage.sh verify --acceptance
-./manage.sh verify
-./tests/dashboard-check.sh
-docker stats --no-stream elements-localnet-network-status
-```
-
-The outage/recovery test stopped only node-03, measured `/api/v1/network`,
-generated a walletless block gap, restarted node-03, and polled its status. A
-20,000-block gap was used to observe real `SYNCING`; after capturing the state,
-the test-only branch was reversibly rolled back with `invalidateblock` at height
-109 on all nodes because full single-seed catch-up was too slow for the test
-window. No volume was deleted. The active network was restored to a common tip
-and production resumed.
-
-## Core network criteria
-
-| # | Criterion | Result | Evidence |
+| # | Requirement | Result | Evidence |
 |---:|---|---|---|
-| 1 | Three-node network starts | PASS | node-01..03 running |
-| 2 | All containers healthy | PASS | Nodes, producer, and dashboard all report Docker `healthy` |
-| 3 | Same genesis | PASS | `8c314e7041f731ab5fbcacb20eb31c8567b73643af4fdbf05ecae52e9552ac8d` |
-| 4 | Nodes connect to peers | PASS | counts 2, 1, 1 |
-| 5 | Only one producer | PASS | exactly `elements-localnet-producer` |
-| 6 | Producer pays 50 units | PASS | block 1 output `50.00000000` to payout address |
-| 7 | Block synchronizes everywhere | PASS | matching heights/hashes |
-| 8 | First reward immature | PASS | deliberate load reported immature balance (`150.00000000` total at height 3) |
-| 9 | First reward spendable at 101 | PASS | trusted balance `50.00000000` at height 101 |
-| 10 | Wallet unloaded after test | PASS | corrected compact `listwallets` result `[]` |
-| 11 | Normal operation walletless | PASS | `listwallets == []`; validators disable wallet |
-| 12 | Restart preserves data | PASS | height 101 before and after restart |
-| 13 | Heights match after restart | PASS | all height 101 in maturity run |
-| 14 | No secrets tracked/output | PASS | generated tree ignored; runtime HTML/API/log scans found none; workspace is not a Git repository |
-| 15 | Shellcheck if available | SKIP | shellcheck not installed; `bash -n` and strict-mode tests passed |
-| 16 | `docker compose config` | PASS | quiet validation succeeded |
-| 17 | Clean verifier | PASS | final `./manage.sh verify` passed |
+| 1 | Existing five-node network stays healthy | **PASS** | `./manage.sh verify`: all five nodes healthy, identical genesis, 5 peers each, matching height 28,967 |
+| 2 | Producer remains the only automatic producer | **PASS** | `verify`: "single producer"; `docker ps` shows exactly one `elements-localnet-producer`, healthy |
+| 3 | Automatic 60-second production continues during explorer operation | **PASS** | Height advanced 28,960 → 28,973 across the session while the explorer indexed and reindexed; `producer.blockInterval == 60` |
+| 4 | Explorer indexes from genesis to the current tip | **PASS** | First run: 28,965 blocks in **21.5 s**; rebuild after `reindex`: genesis → tip in ~22 s, ending `synchronized: true`, `lagBlocks: 0` |
+| 5 | Indexer resumes from its stored cursor after restart | **PASS** | After `docker compose up -d --force-recreate explorer`: `blocksIndexedThisRun: 0`, still at the tip. Also covered by `TestIndexerResumesFromItsStoredCursor` |
+| 6 | Indexed block hashes match direct RPC at genesis, tip, sampled heights | **PASS** | `tests/dashboard-check.sh`: genesis, tip and five random heights compared against `elements-cli getblockhash` |
+| 7 | Indexed transaction counts match block RPC data | **PASS** | Same check compares `txCount` against `getblock … 1`'s `nTx` at five random heights |
+| 8 | The three known Asset IDs are discoverable | **PASS** | All three resolve via `/api/v1/assets/{id}` and `/api/v1/search`. Two further explicit issuances made from Elements-Qt at height 28,734 were also discovered; five assets total |
+| 9 | Confidential issuance is labelled accurately | **PASS** | The three blinded issuances return `issuedSats: null`, `confidentialIssuance: true`, `supplyState: "not publicly verifiable"`. The two explicit ones return a verifiable 21,000,000.00000000 |
+| 10 | Search resolves height, block hash, txid, Asset ID, address | **PASS** | All five verified live; a reissuance-token hash resolves to its asset. Also `TestSearchReturnsEveryMatchingIndex` |
+| 11 | Pagination limits are enforced | **PASS** | `limit=500` clamped to 100; `limit=0` rejected with HTTP 400. Also `TestPageParamsEnforcesBounds` and `TestBlockListPagination` |
+| 12 | Reorg logic covered by an isolated fixture, not the live chain | **PASS** | `TestIndexerDetectsReorgAndFollowsTheNewBranch` serves a synthetic chain from an in-process fake node, forks it at height 2, and asserts rollback of 3 blocks and adoption of the replacement branch. Plus `TestRollbackRestoresSpentOutputsAndRemovesAssets` |
+| 13 | Explorer database survives container restart | **PASS** | Index intact and at the tip after container recreation, with zero blocks re-indexed |
+| 14 | Explorer UI remains responsive while indexing | **PASS** | During a full rebuild, `/api/v1/explorer/status` and `/api/v1/blocks` answered HTTP 200 in 1–5 ms at every 2-second sample from 0 % to 100 % |
+| 15 | Existing network-status endpoints remain compatible | **PASS** | `/healthz`, `/api/v1/network`, `/nodes`, `/nodes/{id}`, `/topology`, `/producer`, `/economics` all pass their original Phase 1 assertions |
+| 16 | No wallet RPC is made | **PASS** | Explorer credentials are whitelisted to ten read-only chain methods with `rpcwhitelistdefault=0`; there is no generic RPC route; node-01 `listwallets == []` throughout |
+| 17 | No wallet file is mounted | **PASS** | `docker inspect` mounts: inventory, assets.json, monitor secrets, explorer secrets, producer status (all `rw=false`) and the index volume. No wallet path |
+| 18 | No Docker socket is mounted | **PASS** | Same mount list contains no `/var/run/docker.sock` |
+| 19 | No secrets in HTML, JS, API JSON, logs, image layers, or Git diff | **PASS** | `/`, `/app.js`, `/styles.css`, `/api/v1/network`, `/api/v1/explorer/status`, `/api/v1/nodes` scanned for `rpcauth`, `rpcpassword`, `RPC_PASSWORD`, secret paths and `payout-wallet`: 0 hits. `git ls-files 'generated/**'` is empty except `.gitkeep` |
+| 20 | Port 8080 binds only to `127.0.0.1` | **PASS** | `HostConfig.PortBindings` = `{"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}]}` |
+| 21 | P2P defaults to localhost-only | **PASS** | All five nodes now publish `127.0.0.1:7142`–`7146`. `P2P_EXPOSURE=localhost` is the default, `lan` is an explicit opt-in that warns, `disabled` publishes nothing |
+| 22 | Go tests pass | **PASS** | `go vet ./...` clean, `gofmt -l` clean, `go test ./...` ok — also re-run inside the image build |
+| 23 | Bash syntax and static checks pass | **PASS** | `tests/static-checks.sh`: scanner self-test, syntax and strict mode, forbidden patterns, loopback publishing, no wallet mount, read-only credentials |
+| 24 | `docker compose config` passes | **PASS** | `docker compose config --quiet` exits 0 |
+| 25 | Report memory, database size, initial indexing duration | **PASS** | 18.93 MiB RSS; 74.4 MB database + 6.8 MB WAL (81.2 MB on the volume, 61 MiB compacted); 21.3 s initial sync |
 
-## Dashboard amendment criteria
+Two checks report **SKIP**, both for the same reason and both unchanged from Phase 1:
 
-| # | Criterion | Result | Evidence |
-|---:|---|---|---|
-| 1 | Image builds | PASS | multi-stage Go build and in-image tests succeeded |
-| 2 | `/healthz` healthy | PASS | HTTP 200, `{"status":"ok"}` |
-| 3 | Browser page loads | PASS | `GET /` HTTP 200 on `127.0.0.1:8080` |
-| 4 | Three nodes appear | PASS | API `totalNodes=3` and three node records |
-| 5 | Roles correct | PASS | producer/archive/validator |
-| 6 | All synchronized nodes healthy | PASS | three `HEALTHY` records |
-| 7 | Height/hash match RPC | PASS | direct/API both height 109 and identical hash in recorded comparison |
-| 8 | Producer/reward schedule accurate | PASS | enabled/running, 60s, 5,000,000,000 sats, era 0, next 210000 |
-| 9 | One stopped validator offline | PASS | node-03 only `OFFLINE`; online 2, offline 1 |
-| 10 | Restart shows syncing then healthy | PASS | real `SYNCING` captured; restored common-tip node later `HEALTHY` |
-| 11 | Equal-height mismatch diverged | PASS | Go unit `TestEqualHeightMismatchIsDiverged` |
-| 12 | Dashboard never accesses wallet | PASS | hard-coded method set has no wallet RPC; whitelist test denies wallet RPC with HTTP 403 |
-| 13 | No Docker socket | PASS | runtime mounts empty for socket; source scan clean |
-| 14 | No secrets in output | PASS | HTML, JSON, and status logs scanned against generated RPC passwords |
-| 15 | Responsive during timeout | PASS | API response `<0.01s` with node-03 offline; two nodes remained online |
-| 16 | Memory recorded | PASS | network-status `4.113 MiB`, `0.03%` in the final runtime sample |
-| 17 | Docs and report updated | PASS | README, PROJECT_STATE, DECISIONS, this report |
+| Check | Result | Reason |
+|---|---|---|
+| `shellcheck` | **SKIP** | `shellcheck` is not installed on this host |
+| ripgrep scanning path | **SKIP** | `ripgrep` is not installed on this host, so `tests/static-checks.sh` exercised the grep fallback instead |
 
-## Additional checks
+## Measured figures
 
-- All documented read-only API endpoints returned HTTP 200.
-- Unknown node ID returned HTTP 404.
-- Monitor identity wallet call returned HTTP 403 from Elements RPC whitelist.
-- Dashboard runtime user was `status:status`, not root.
-- Published ports were exactly `127.0.0.1:7041-7043` and
-  `127.0.0.1:8080`; P2P had no host mapping.
-- Go unit tests cover divergence, syncing/fork/stale priority, integer reward
-  economics, canonical aggregation, offline visibility, and disagreement.
+| Metric | Value |
+|---|---|
+| Initial index from genesis | 21.3 s for 28,965 blocks (~1,350 blocks/s) |
+| Full rebuild after `explorer reindex` | ~22 s, API responsive throughout |
+| Explorer resident memory | 18.93 MiB |
+| Explorer image size | 15.8 MB (`FROM scratch`) |
+| Database on volume | 81,205,704 bytes (74.4 MB db + 6.8 MB WAL) |
+| Database compacted (`VACUUM INTO`) | 64,430,080 bytes |
+| Indexed rows | 28,973 blocks · 28,978 transactions · 28,971 inputs · 57,946 outputs · 5 issuances · 5 assets · 28,980 address rows |
+| Busiest address page (28,972 transactions) | 0.40 s summary, 0.075 s UTXO page |
+| API latency during a full rebuild | 1–5 ms |
 
-## Known limitations
+## Loose ends closed
 
-- Shellcheck could not be run because it is absent.
-- The parent directory is not a Git worktree, so there is no commit ID and no
-  actual Git index to inspect. `.gitignore`, `.dockerignore`, and runtime secret
-  scans passed.
-- A very large catch-up on a single seed is intentionally not optimized in
-  Phase 1. The dashboard remained responsive and did not serialize on the slow
-  node.
-- Only amd64 is supported by the pinned Elements artifact in this phase.
+### `tests/static-checks.sh` could PASS with `rg` missing
 
-## Phase 1.1 hardening report
+Previously the forbidden-pattern check ran `rg` directly inside `if`. With ripgrep
+absent the command exited 127, the `if` took the else branch, and the script printed
+PASS. Now the scanner is selected explicitly, grep is a supported fallback, "no
+match" (status 1) is distinguished from a scanner error (status 2 or above), and a
+self-test runs the active scanner against a dirty fixture and a clean fixture before
+any real check.
 
-Date: 2026-09-14. No 20,000-block fixture was repeated. The normal runtime was
-migrated to fresh `elements-localnet-phase11-*` volumes; all five legacy Phase
-1 volumes remain detached and preserved.
+All three paths were exercised:
 
-| # | Result | Evidence |
-|---:|:---:|---|
-| 1 | PASS | Five node containers healthy |
-| 2 | PASS | Genesis `8c314e7041f731ab5fbcacb20eb31c8567b73643af4fdbf05ecae52e9552ac8d` on all |
-| 3 | PASS | Stable tip height 215/hash `14c407a423b855fa41b4c3896e721d340026b20ad60032d53261b7365e1bbf86` on all |
-| 4 | PASS | Peer counts 4,1,1,1,1 |
-| 5 | PASS | Exactly one healthy producer service |
-| 6 | PASS | Validators have no producer loop or generation credentials |
-| 7 | PASS | node-01 `listwallets=[]`; validators `disablewallet=1` |
-| 8 | PASS | Heights 97–102 logged consecutively at approximately one-second cadence |
-| 9 | PASS | All four validators reached the steady producer tip/hash |
-| 10 | PASS | `producer stop` stopped scheduled generation |
-| 11 | PASS | Height remained 103 for two additional polling cycles |
-| 12 | PASS | Start resumed production from 103 to 107 |
-| 13 | PASS | Producer restart retained `1s`, height 107 to 111 |
-| 14 | PASS | Compose restart preserved genesis/data and five-node topology |
-| 15 | PASS | API reports one producer, four validators, node-02 archive capability |
-| 16 | PASS | API hash equals direct `getblockhash` at reported height |
-| 17 | PASS | Active node log scan found no invalid-chain/corruption warning |
-| 18 | PASS | RPC 7041–7045 and dashboard 8080 bind only to `127.0.0.1` |
-| 19 | PASS | Dashboard has no Docker socket mount |
-| 20 | PASS | Credential/output/static secret scans clean |
-| 21 | PASS | `docker compose config --quiet` |
-| 22 | PASS | Go tests, Bash syntax/static, verifier, dashboard checks |
+| Path | Observed |
+|---|---|
+| grep fallback, clean tree | `PASS scanner self-test (grep)` and `PASS no obsolete options…` |
+| grep fallback, real violation planted | `FAIL forbidden obsolete/exposure patterns` plus the offending file and line |
+| neither scanner on `PATH` | `FAIL scanner: neither ripgrep nor grep is installed; pattern checks cannot run`, exit 1 |
 
-Invalid interval values `0`, `-1`, empty, and non-numeric all exited 2. A valid
-`producer interval 1` preserved all five node container IDs and confirmed the
-effective value. Shellcheck was still unavailable; `bash -n` passed.
+### P2P published on `0.0.0.0`
+
+Corrected to `127.0.0.1` by default with an explicit `localhost` / `lan` / `disabled`
+setting. Verified end to end: after rebinding, Windows Elements-Qt reconnected
+through WSL2 localhost forwarding and every node reported five peers (four internal
+mesh links plus the external Qt node). The WSL-IP fallback is documented in the
+README for hosts that cannot forward localhost, rather than defaulting back to
+`0.0.0.0`.
+
+### `.gitignore`
+
+Reviewed before committing. `generated/` remains ignored, with explicit belt-and-
+braces entries for `generated/secrets/`, `generated/backups/`, `*.rpc`, `wallet.dat`,
+`*wallet*.backup`, `.cookie`, SQLite files, and the local Go caches. `git status` and
+`git ls-files 'generated/**'` were reviewed before the commit; no generated secret or
+wallet material is tracked.
+
+## Not tested
+
+- Peg-in and peg-out rendering: this chain sets `validatepegin=0` and has produced no
+  peg traffic, so those code paths are exercised only by their absence.
+- A live reorg on the production chain: deliberately not performed. Reorg behaviour is
+  covered by the isolated fixture instead.
+- Multi-architecture images: only `linux/amd64` is built.

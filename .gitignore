@@ -4,3 +4,18 @@ generated/*
 legacy/
 *.log
 .DS_Store
+
+# Never commit private material, even if generated/ is ever un-ignored.
+generated/secrets/
+generated/backups/
+**/*.rpc
+**/wallet.dat
+**/*wallet*.backup
+**/.cookie
+*.sqlite
+*.sqlite3
+explorer.db*
+
+# Local Go build caches; never part of the image build context.
+explorer/.gocache/
+explorer/.gomodcache/

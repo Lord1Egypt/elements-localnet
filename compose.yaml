@@ -37,7 +37,7 @@ services:
       - ./generated/nodes/node-01/elements.conf:/config/elements.conf:ro
     ports:
       - "127.0.0.1:7041:7040"
-      - "0.0.0.0:7142:7042"
+      - "127.0.0.1:7142:7042"
     networks:
       localnet:
         ipv4_address: 172.28.239.11
@@ -51,7 +51,7 @@ services:
       - ./generated/nodes/node-02/elements.conf:/config/elements.conf:ro
     ports:
       - "127.0.0.1:7042:7040"
-      - "0.0.0.0:7143:7042"
+      - "127.0.0.1:7143:7042"
     networks:
       localnet:
         ipv4_address: 172.28.239.12
@@ -68,7 +68,7 @@ services:
       - ./generated/nodes/node-03/elements.conf:/config/elements.conf:ro
     ports:
       - "127.0.0.1:7043:7040"
-      - "0.0.0.0:7144:7042"
+      - "127.0.0.1:7144:7042"
     networks:
       localnet:
         ipv4_address: 172.28.239.13
@@ -85,7 +85,7 @@ services:
       - ./generated/nodes/node-04/elements.conf:/config/elements.conf:ro
     ports:
       - "127.0.0.1:7044:7040"
-      - "0.0.0.0:7145:7042"
+      - "127.0.0.1:7145:7042"
     networks:
       localnet:
         ipv4_address: 172.28.239.14
@@ -102,7 +102,7 @@ services:
       - ./generated/nodes/node-05/elements.conf:/config/elements.conf:ro
     ports:
       - "127.0.0.1:7045:7040"
-      - "0.0.0.0:7146:7042"
+      - "127.0.0.1:7146:7042"
     networks:
       localnet:
         ipv4_address: 172.28.239.15
@@ -144,29 +144,36 @@ services:
       node-01:
         condition: service_healthy
 
-  network-status:
+  explorer:
     build:
-      context: ./network-status
+      context: ./explorer
       dockerfile: Dockerfile
       args:
         LOCAL_UID: "1000"
         LOCAL_GID: "1000"
-    image: elements-localnet-network-status:phase1
-    container_name: elements-localnet-network-status
+    image: elements-localnet-explorer:phase2a
+    container_name: elements-localnet-explorer
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /tmp:size=8m,mode=1777
+      - /tmp:size=64m,mode=1777
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     environment:
       INVENTORY_FILE: /run/localnet/inventory.json
+      ASSET_REGISTRY_FILE: /run/localnet/assets.json
+      EXPLORER_DB_PATH: /var/lib/elements-explorer/explorer.db
+      EXPLORER_SECRETS_DIR: /run/explorer-secrets
+      EXPLORER_PRIMARY_NODE: node-02
     volumes:
       - ./generated/inventory.json:/run/localnet/inventory.json:ro
+      - ./generated/public/assets.json:/run/localnet/assets.json:ro
       - ./generated/secrets/monitor:/run/monitor-secrets:ro
+      - ./generated/secrets/explorer:/run/explorer-secrets:ro
       - producer-status:/run/producer-status:ro
+      - explorer-db:/var/lib/elements-explorer
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -175,11 +182,11 @@ services:
       node-01:
         condition: service_started
     healthcheck:
-      test: ["CMD", "/usr/local/bin/network-status", "-healthcheck"]
-      interval: 5s
-      timeout: 3s
+      test: ["CMD", "/usr/local/bin/explorer", "-healthcheck"]
+      interval: 10s
+      timeout: 4s
       retries: 20
-      start_period: 5s
+      start_period: 10s
 
 networks:
   localnet:
@@ -211,3 +218,6 @@ volumes:
   producer-status:
     external: true
     name: elements-localnet-phase11-producer-status
+  explorer-db:
+    external: true
+    name: elements-localnet-phase11-explorer-db

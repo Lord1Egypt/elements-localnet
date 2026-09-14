@@ -6,6 +6,7 @@ ENV_FILE="${ROOT_DIR}/generated/network.env"
 [[ -f "${ENV_FILE}" ]] || { echo "FAIL setup: generated/network.env is missing" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
+NETWORK_NAME="${NETWORK_NAME:-elements-localnet}"
 COMPOSE=(docker compose -f "${ROOT_DIR}/compose.yaml")
 CLI=(elements-cli -chain=elements -datadir=/data -conf=/config/elements.conf)
 acceptance="no"
@@ -30,11 +31,11 @@ genesis=""
 heights=()
 for ((i = 1; i <= NODE_COUNT; i++)); do
   node="$(printf 'node-%02d' "${i}")"
-  health="$(docker inspect --format '{{.State.Health.Status}}' "elements-localnet-${node}" 2>/dev/null || true)"
+  health="$(docker inspect --format '{{.State.Health.Status}}' "${NETWORK_NAME}-${node}" 2>/dev/null || true)"
   for attempt in {1..30}; do
     [[ "${health}" == "healthy" ]] && break
     sleep 1
-    health="$(docker inspect --format '{{.State.Health.Status}}' "elements-localnet-${node}" 2>/dev/null || true)"
+    health="$(docker inspect --format '{{.State.Health.Status}}' "${NETWORK_NAME}-${node}" 2>/dev/null || true)"
   done
   [[ "${health}" == "healthy" ]] && pass "${node} healthy" || fail "${node} healthy" "status=${health:-missing}"
   node_genesis="$(rpc "${node}" getblockhash 0 2>/dev/null || true)"
@@ -62,7 +63,7 @@ for attempt in {1..30}; do
 done
 ((unique == 1)) && pass "matching heights" "${heights[0]}" || fail "matching heights" "${heights[*]}"
 
-producer_count="$(docker ps --format '{{.Names}}' | awk '$0 == "elements-localnet-producer" {n++} END {print n+0}')"
+producer_count="$(docker ps --format '{{.Names}}' | awk -v name="${NETWORK_NAME}-producer" '$0 == name {n++} END {print n+0}')"
 if [[ "${AUTO_MINE}" == "yes" ]]; then
   ((producer_count == 1)) && pass "single producer" || fail "single producer" "running=${producer_count}"
 else

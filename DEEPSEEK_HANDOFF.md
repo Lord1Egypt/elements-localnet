@@ -1,148 +1,111 @@
-# DeepSeek Flash handoff — Elements localnet Phase 1.1
+# Handoff — elements-localnet Phase 2A
 
 ## Purpose and architecture
 
-`elements-localnet` is a Docker Compose generator for a private, OP_TRUE-signed
-Elements development chain. It uses unmodified Elements, one walletless
-scheduler, isolated node datadirs, and a read-only Go dashboard. It is not a
-public network, explorer, controller, or wallet UI.
+`elements-localnet` is a Docker Compose generator for a private, `OP_TRUE`-signed
+Elements development chain. It uses unmodified Elements Core, one walletless block
+scheduler, isolated node datadirs, and a read-only Go service that is now both the
+network telemetry dashboard and a full block explorer. It is not a public network, a
+controller, or a wallet UI.
 
-Pinned upstream: Elements Core `23.3.4`, tag `elements-23.3.4`, upstream short
-commit `ca17280`. Official amd64 archive SHA-256:
+Pinned upstream: Elements Core `23.3.4`, tag `elements-23.3.4`, upstream short commit
+`ca17280`. Official amd64 archive SHA-256:
 `a758151ace3f21008ab162067ffce9e0e526a1b5d55995e2c30d9cd7ccda41a0`.
 
-## Final topology and decisions
+## Topology
 
-- `node-01`: role `producer`; sole target of the separate producer service.
-- `node-02`: role `validator`, capabilities `archive` and `txindex`; unpruned.
-- `node-03`, `node-04`, `node-05`: role `validator`.
-- Each node has its own external named volume, config, admin RPC credential, and
-  whitelist-restricted monitor credential. Validators disable wallet RPC.
-- One producer sends exactly `generatetoaddress 1 <public-address>` every 1s.
-  Manual bulk mining is separate and requires stopping the producer.
-- A project volume `flock` plus fixed container name prevents duplicate loops.
-- Producer signals stop sleeps/current curl and prevent subsequent requests.
-  Repeated production failures update sanitized status and fail health checks.
-- Dashboard polling remains concurrent/read-only, without Docker socket,
-  wallet RPC, arbitrary RPC, database, or controller actions.
-- Dashboard adds a 60-second block-rate window, integer halving-time estimate,
-  producer timestamp/status, capabilities, and stopped-producer generation
-  warnings. Browser RPC errors are codes such as `RPC_TIMEOUT`; URLs/secrets are
-  not exposed.
-- One second is local-development-only: 86,400 blocks/day, 4,320,000 subsidy
-  units/day at 50 units/block, maturity around 100s, first halving around 58h20m.
-- Destructive fork tests must use a separate disposable Compose project and
-  volumes. Never invalidate the demonstration chain.
+- `node-01` — role `producer`; sole target of the separate producer service;
+  wallet-capable but normally `listwallets == []`.
+- `node-02` — role `validator`, capabilities `archive` and `txindex`; unpruned;
+  preferred RPC source for the explorer index.
+- `node-03`, `node-04`, `node-05` — role `validator`, `disablewallet=1`.
+- Full mesh, exactly one link per pair. Lower-numbered nodes dial higher-numbered
+  ones, so each node has `NODE_COUNT - 1` internal peers.
+- Windows Elements-Qt connects as an external sixth node through
+  `127.0.0.1:7142`–`7146`. It is not one of the five managed nodes.
+- Each node owns one external named volume, one config, an admin RPC credential, a
+  whitelist-restricted monitor credential, and a whitelist-restricted explorer
+  credential.
+- The producer sends exactly `generatetoaddress 1 <public-address>` every 60 s. A
+  project volume `flock` plus a fixed container name prevents duplicate loops.
+
+## What Phase 2A changed
+
+- `network-status/` became `explorer/`. The service keeps every Phase 1 endpoint and
+  adds the explorer API, the SQLite index, and a new browser application.
+- A third RPC identity per node, `explorer_node_NN`, whitelisted to ten read-only
+  chain methods. `scripts/ensure-explorer-credentials.sh` adds it to an already
+  generated network without regenerating any existing credential.
+- P2P publishing moved from `0.0.0.0` to `127.0.0.1` by default, with an explicit
+  `P2P_EXPOSURE` of `localhost`, `lan`, or `disabled`.
+- `setup-network.sh` gained a twelve-question guided wizard, full flag coverage,
+  port-collision detection, topology selection, and an existing-payout-address path.
+  Non-interactive mode never prompts.
+- `manage.sh` gained `explorer status|logs|restart|backup|reindex`.
+- `tests/static-checks.sh` can no longer PASS because a scanner is missing.
+- New docs: `docs/EXPLORER_ARCHITECTURE.md`, `docs/EXPLORER_SCHEMA.md`.
+
+## Explorer in one page
+
+- One Go binary, one image `elements-localnet-explorer:phase2a`, one origin
+  <http://127.0.0.1:8080>. Static assets are embedded; no CDN, no Node.js runtime.
+- Telemetry poller and chain indexer are independent goroutines. A stalled indexer
+  cannot block telemetry.
+- The index is SQLite in WAL mode (`modernc.org/sqlite`, pure Go, `CGO_ENABLED=0`) in
+  its own named volume `<namespace>-explorer-db`. Schema version `1`.
+- Indexing is resumable: the cursor lives in `meta.indexed_height` /
+  `meta.indexed_hash`, continuity is checked every step, reorgs roll back one block
+  at a time inside a transaction, and the replacement branch is then indexed forward.
+- Bounded work per step, bounded batches, bounded exponential backoff (1 s → 60 s),
+  `io.LimitReader` on every response. ~19 MiB resident on a 29,000-block chain.
+- Confidentiality is enforced in the schema: a blinded amount is `NULL`, never `0`,
+  and aggregates exclude `NULL`. `assets.issued_sats` is `NULL` whenever any issuance
+  of that asset is blinded.
+- Asset IDs and reissuance tokens are recomputed locally with upstream's fast merkle
+  hash and compared against what the node reports; `derivation_verified` records the
+  result. Unit tests pin the algorithm against all five issuances on this chain.
 
 ## Current runtime
 
-Expected services: five healthy node containers, healthy `producer`, and
-healthy `network-status`. Dashboard: <http://127.0.0.1:8080>. RPC ports
-7041–7045 are IPv4-loopback only. The producer is enabled with effective
-`BLOCK_INTERVAL=1`; node-01 has no loaded wallet and validators use
-`disablewallet=1`. Stable test tip was height 215 with hash
-`14c407a423b855fa41b4c3896e721d340026b20ad60032d53261b7365e1bbf86`;
-height advances continuously.
+Expected services: five healthy node containers, one healthy `producer`, one healthy
+`explorer`. Explorer at <http://127.0.0.1:8080>. RPC ports `127.0.0.1:7041`–`7045`.
+P2P ports `127.0.0.1:7142`–`7146`. Chain height at handoff: 28,972, index
+synchronized, five assets discovered. See `PROJECT_STATE.md` for the live figures and
+`ACCEPTANCE_TEST_REPORT.md` for the tested baseline.
 
-Active volumes:
+## Rules for the next session
 
-```text
-elements-localnet-phase11-node-01-data
-elements-localnet-phase11-node-02-data
-elements-localnet-phase11-node-03-data
-elements-localnet-phase11-node-04-data
-elements-localnet-phase11-node-05-data
-elements-localnet-phase11-producer-lock
-elements-localnet-phase11-producer-status
-```
+- Read `PROJECT_STATE.md` first, then confirm the running state with read-only
+  commands. Do not trust documentation over the running system.
+- Never read, move, load, print, modify, overwrite, index, or commit
+  `generated/secrets/wallet/payout-wallet.backup`. The payout wallet is in use from
+  Windows Elements-Qt; do not load the Docker copy of the same wallet.
+- Never reset, invalidate, or fast-forward the live chain. Destructive fork tests go
+  in a separate disposable Compose project with separate volumes.
+- `./manage.sh explorer reindex --yes-i-understand` may delete only the explorer
+  index volume. It must never touch node volumes, chain data, wallets, credentials,
+  or `generated/public/assets.json`.
+- Public RPC stays forbidden. P2P stays on loopback unless the owner explicitly
+  chooses `lan`.
+- Nothing has been pushed and no remote exists. Creating a remote or pushing requires
+  explicit owner authorization.
 
-Detached legacy invalidation-test volumes, deliberately not deleted:
+## Out of scope until a later phase
 
-```text
-elements-localnet-node-01-data
-elements-localnet-node-02-data
-elements-localnet-node-03-data
-elements-localnet-producer-lock
-elements-localnet-producer-status
-```
-
-Their matching ignored files are at
-`legacy/phase1-invalidated-20260914/generated/`. Only the owner should decide
-whether to delete these later.
-
-## Files changed in Phase 1.1
-
-```text
-.gitignore
-README.md
-DECISIONS.md
-PROJECT_STATE.md
-ROADMAP.md
-ACCEPTANCE_TEST_REPORT.md
-DEEPSEEK_HANDOFF.md
-compose.yaml
-setup-network.sh
-manage.sh
-scripts/generate-compose.sh
-scripts/generate-inventory.sh
-scripts/create-payout-wallet.sh
-scripts/verify-network.sh
-producer/Dockerfile
-producer/block-producer.sh
-producer/healthcheck.sh
-network-status/main.go
-network-status/main_test.go
-network-status/static/app.js
-tests/dashboard-check.sh
-```
+Sending transactions from the browser, wallet loading or creation from the browser,
+private key handling, a faucet, `issueasset` or reissuance controls, browser-based
+node creation or removal, a Docker control API, public internet deployment,
+rebranding Elements Core, consensus changes, and any new coin or source fork. These
+need authentication and stronger isolation and belong to Phase 3 and later.
 
 ## Commands
 
 ```bash
 cd /home/lordegypt/ChainProject/elements-localnet
 ./manage.sh status
-./manage.sh height
-./manage.sh peers
 ./manage.sh verify
+./manage.sh explorer status
 ./tests/dashboard-check.sh
 ./tests/static-checks.sh
-(cd network-status && GOTOOLCHAIN=local GOCACHE=/tmp/elements-localnet-gocache go test ./...)
-curl -fsS http://127.0.0.1:8080/healthz
-./manage.sh producer interval 1
-./manage.sh producer stop
-./manage.sh producer start
-./manage.sh stop
-./manage.sh start
+docker compose build explorer     # runs go vet and go test inside the build
 ```
-
-Never use `destroy` casually. Its explicit form is
-`./manage.sh destroy --yes-i-understand`, and it targets only active Phase 1.1
-volumes plus generated files; detached legacy volumes are intentionally outside
-that command.
-
-## Verification performed
-
-All 22 Phase 1.1 bounded checks pass; see `ACCEPTANCE_TEST_REPORT.md`. Highlights:
-five healthy nodes; same genesis; steady identical height/hash; peers 4,1,1,1,1;
-one producer; walletless; six consecutive automatic blocks at about 1s; stop
-held height 103; start/restart resumed and retained 1s; Compose restart
-preserved data; dashboard roles/interval/hash passed; node logs contained no
-invalid-chain warning; localhost/socket/secret/config/Go/Bash checks passed.
-No long fork fixture was run. Shellcheck was unavailable.
-
-## Known limitations / incomplete items
-
-- linux/amd64 only.
-- Optional failed-node JSON nullability and separately exposed last-known
-  snapshot were deferred. Required sanitized structured errors are implemented.
-- Detached legacy volumes can cause harmless Compose warnings because they keep
-  old project labels; they remain intentionally unattached.
-- A local Git repository was initialized after ignore verification. No remote
-  was added; inspect `git status` and `git rev-parse HEAD` before editing.
-
-## Recommended next task
-
-If the user authorizes more Phase 1 hardening, create a small disposable fork
-classification harness with a different Compose project name and disposable
-volumes. Do **not** start Phase 2, an indexer, explorer, or control dashboard
-until the user explicitly authorizes Phase 2.

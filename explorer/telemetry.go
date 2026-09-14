@@ -2,26 +2,18 @@ package main
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
-
-//go:embed static/*
-var staticFiles embed.FS
 
 type Inventory struct {
 	NetworkName           string     `json:"networkName"`
@@ -37,12 +29,12 @@ type Inventory struct {
 }
 
 type NodeSpec struct {
-	ID              string `json:"id"`
-	Role            string `json:"role"`
-	RPCHost         string `json:"rpcHost"`
-	RPCPort         int    `json:"rpcPort"`
-	NetworkIP       string `json:"networkIp"`
-	CredentialsFile string `json:"credentialsFile"`
+	ID              string   `json:"id"`
+	Role            string   `json:"role"`
+	RPCHost         string   `json:"rpcHost"`
+	RPCPort         int      `json:"rpcPort"`
+	NetworkIP       string   `json:"networkIp"`
+	CredentialsFile string   `json:"credentialsFile"`
 	Capabilities    []string `json:"capabilities,omitempty"`
 }
 
@@ -64,6 +56,7 @@ type NodeStatus struct {
 	MempoolTransactions  int64     `json:"mempoolTransactions"`
 	MempoolBytes         int64     `json:"mempoolBytes"`
 	MempoolUsage         int64     `json:"mempoolUsage"`
+	ExternalPeers        int       `json:"externalPeerConnections"`
 	Chainwork            string    `json:"chainwork"`
 	Version              int       `json:"version"`
 	Subversion           string    `json:"subversion"`
@@ -78,34 +71,36 @@ type NodeStatus struct {
 }
 
 type NetworkSummary struct {
-	NetworkName           string    `json:"networkName"`
-	Chain                 string    `json:"chain"`
-	TotalNodes            int       `json:"totalNodes"`
-	OnlineNodes           int       `json:"onlineNodes"`
-	OfflineNodes          int       `json:"offlineNodes"`
-	SynchronizedNodes     int       `json:"synchronizedNodes"`
-	CatchingUpNodes       int       `json:"catchingUpNodes"`
-	DivergentNodes        int       `json:"divergentNodes"`
-	CanonicalHeight       int64     `json:"canonicalHeight"`
-	CanonicalBestHash     string    `json:"canonicalBestBlockHash"`
-	LatestBlockTimestamp  int64     `json:"latestBlockTimestamp"`
-	LatestBlockAgeSeconds int64     `json:"latestBlockAgeSeconds"`
-	TotalPeerConnections  int       `json:"totalPeerConnections"`
-	MempoolTransactions   int64     `json:"mempoolTransactions"`
-	MempoolBytes          int64     `json:"mempoolBytes"`
-	MempoolUsage          int64     `json:"mempoolUsage"`
-	AggregateChainBytes   int64     `json:"aggregateBlockchainSize"`
-	UpdatedAt             time.Time `json:"updatedAt"`
-	BlockProductionRatePerMinute float64 `json:"blockProductionRatePerMinute"`
+	NetworkName                  string    `json:"networkName"`
+	Chain                        string    `json:"chain"`
+	TotalNodes                   int       `json:"totalNodes"`
+	OnlineNodes                  int       `json:"onlineNodes"`
+	OfflineNodes                 int       `json:"offlineNodes"`
+	SynchronizedNodes            int       `json:"synchronizedNodes"`
+	CatchingUpNodes              int       `json:"catchingUpNodes"`
+	DivergentNodes               int       `json:"divergentNodes"`
+	CanonicalHeight              int64     `json:"canonicalHeight"`
+	CanonicalBestHash            string    `json:"canonicalBestBlockHash"`
+	LatestBlockTimestamp         int64     `json:"latestBlockTimestamp"`
+	LatestBlockAgeSeconds        int64     `json:"latestBlockAgeSeconds"`
+	TotalPeerConnections         int       `json:"totalPeerConnections"`
+	ExternalPeerConnections      int       `json:"externalPeerConnections"`
+	ManagedNodeLinks             int       `json:"managedNodeLinks"`
+	MempoolTransactions          int64     `json:"mempoolTransactions"`
+	MempoolBytes                 int64     `json:"mempoolBytes"`
+	MempoolUsage                 int64     `json:"mempoolUsage"`
+	AggregateChainBytes          int64     `json:"aggregateBlockchainSize"`
+	UpdatedAt                    time.Time `json:"updatedAt"`
+	BlockProductionRatePerMinute float64   `json:"blockProductionRatePerMinute"`
 }
 
 type Economics struct {
-	InitialRewardSats  uint64 `json:"initialRewardSats,string"`
-	CurrentRewardSats  uint64 `json:"currentRewardSats,string"`
-	HalvingInterval    uint64 `json:"halvingInterval"`
-	CurrentRewardEra   uint64 `json:"currentRewardEra"`
-	NextHalvingHeight  uint64 `json:"nextHalvingHeight"`
-	BlocksUntilHalving uint64 `json:"blocksUntilNextHalving"`
+	InitialRewardSats            uint64 `json:"initialRewardSats,string"`
+	CurrentRewardSats            uint64 `json:"currentRewardSats,string"`
+	HalvingInterval              uint64 `json:"halvingInterval"`
+	CurrentRewardEra             uint64 `json:"currentRewardEra"`
+	NextHalvingHeight            uint64 `json:"nextHalvingHeight"`
+	BlocksUntilHalving           uint64 `json:"blocksUntilNextHalving"`
 	EstimatedSecondsUntilHalving uint64 `json:"estimatedSecondsUntilHalving"`
 }
 
@@ -165,61 +160,9 @@ type poller struct {
 	snapshot Snapshot
 	samples  []heightSample
 }
-type heightSample struct { at time.Time; height int64 }
-
-func main() {
-	if len(os.Args) == 2 && os.Args[1] == "-healthcheck" {
-		client := &http.Client{Timeout: 2 * time.Second}
-		resp, err := client.Get("http://127.0.0.1:8080/healthz")
-		if err != nil || resp.StatusCode != http.StatusOK {
-			os.Exit(1)
-		}
-		_ = resp.Body.Close()
-		return
-	}
-	path := getenv("INVENTORY_FILE", "/run/localnet/inventory.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Fatalf("inventory: %v", err)
-	}
-	var inv Inventory
-	if err := json.Unmarshal(data, &inv); err != nil {
-		log.Fatalf("inventory: %v", err)
-	}
-	if err := validateInventory(inv); err != nil {
-		log.Fatalf("inventory: %v", err)
-	}
-	p := &poller{inv: inv, client: &http.Client{Timeout: time.Duration(inv.RPCTimeoutMillis) * time.Millisecond}}
-	p.refresh(context.Background())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go p.run(ctx)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, map[string]string{"status": "ok"}) })
-	mux.HandleFunc("GET /api/v1/network", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, p.getSnapshot()) })
-	mux.HandleFunc("GET /api/v1/nodes", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, p.getSnapshot().Nodes) })
-	mux.HandleFunc("GET /api/v1/nodes/{id}", p.nodeHandler)
-	mux.HandleFunc("GET /api/v1/topology", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, p.getSnapshot().Topology) })
-	mux.HandleFunc("GET /api/v1/producer", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, p.getSnapshot().Producer) })
-	mux.HandleFunc("GET /api/v1/economics", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, p.getSnapshot().Economics) })
-	web, _ := fs.Sub(staticFiles, "static")
-	mux.Handle("GET /", http.FileServer(http.FS(web)))
-
-	server := &http.Server{Addr: ":8080", Handler: securityHeaders(mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
-	go func() {
-		log.Printf("network-status listening on :8080 for %d configured nodes", len(inv.Nodes))
-		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
-		}
-	}()
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-	cancel()
-	shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
-	defer done()
-	_ = server.Shutdown(shutdownCtx)
+type heightSample struct {
+	at     time.Time
+	height int64
 }
 
 func validateInventory(inv Inventory) error {
@@ -272,16 +215,25 @@ func (p *poller) refresh(ctx context.Context) {
 	snapshot.Producer = readProducer(p.inv)
 	p.mu.Lock()
 	if p.snapshot.Network.CanonicalHeight >= 0 && snapshot.Network.CanonicalHeight > p.snapshot.Network.CanonicalHeight && !snapshot.Producer.Running {
-		if snapshot.Producer.Enabled { snapshot.Producer.GenerationWarning = "ORPHANED_PRODUCTION" } else { snapshot.Producer.GenerationWarning = "EXTERNAL_GENERATION" }
+		if snapshot.Producer.Enabled {
+			snapshot.Producer.GenerationWarning = "ORPHANED_PRODUCTION"
+		} else {
+			snapshot.Producer.GenerationWarning = "EXTERNAL_GENERATION"
+		}
 	}
 	p.samples = append(p.samples, heightSample{at: now, height: snapshot.Network.CanonicalHeight})
-	cutoff := now.Add(-60 * time.Second); first := 0
-	for first < len(p.samples)-1 && p.samples[first].at.Before(cutoff) { first++ }
+	cutoff := now.Add(-60 * time.Second)
+	first := 0
+	for first < len(p.samples)-1 && p.samples[first].at.Before(cutoff) {
+		first++
+	}
 	p.samples = p.samples[first:]
 	if len(p.samples) > 1 {
 		a, b := p.samples[0], p.samples[len(p.samples)-1]
 		seconds := b.at.Sub(a.at).Seconds()
-		if seconds > 0 && b.height >= a.height { snapshot.Network.BlockProductionRatePerMinute = float64(b.height-a.height) * 60 / seconds }
+		if seconds > 0 && b.height >= a.height {
+			snapshot.Network.BlockProductionRatePerMinute = float64(b.height-a.height) * 60 / seconds
+		}
 	}
 	p.snapshot = snapshot
 	p.mu.Unlock()
@@ -307,7 +259,13 @@ func (p *poller) pollNode(parent context.Context, spec NodeSpec) NodeStatus {
 			n.State = "ERROR"
 			n.HealthState = "ERROR"
 		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) { n.LastError = "RPC_TIMEOUT" } else if reached { n.LastError = "RPC_RESPONSE_INVALID" } else { n.LastError = "RPC_UNAVAILABLE" }
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			n.LastError = "RPC_TIMEOUT"
+		} else if reached {
+			n.LastError = "RPC_RESPONSE_INVALID"
+		} else {
+			n.LastError = "RPC_UNAVAILABLE"
+		}
 		return n
 	}
 	if err := decodeNode(&n, responses); err != nil {
@@ -322,7 +280,11 @@ func (p *poller) pollNode(parent context.Context, spec NodeSpec) NodeStatus {
 		n.Online = true
 		n.State = "ERROR"
 		n.HealthState = "ERROR"
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) { n.LastError = "RPC_TIMEOUT" } else { n.LastError = "RPC_RESPONSE_INVALID" }
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			n.LastError = "RPC_TIMEOUT"
+		} else {
+			n.LastError = "RPC_RESPONSE_INVALID"
+		}
 		return n
 	}
 	var header struct {
@@ -488,6 +450,23 @@ func decodeNode(n *NodeStatus, r map[string]json.RawMessage) error {
 
 func aggregate(inv Inventory, nodes []NodeStatus, now time.Time) Snapshot {
 	height, hash := canonical(nodes)
+	// Peers that are not one of the managed nodes are counted as external
+	// connections. The number of distinct external nodes behind them cannot be
+	// determined reliably, so only the connection count is reported.
+	managedHosts := map[string]bool{}
+	for _, spec := range inv.Nodes {
+		managedHosts[spec.NetworkIP] = true
+		managedHosts[spec.ID] = true
+		managedHosts[spec.RPCHost] = true
+	}
+	for i := range nodes {
+		for _, addr := range nodes[i].PeerAddresses {
+			host := strings.Trim(strings.Split(addr, ":")[0], "[]")
+			if !managedHosts[host] {
+				nodes[i].ExternalPeers++
+			}
+		}
+	}
 	summary := NetworkSummary{NetworkName: inv.NetworkName, TotalNodes: len(nodes), CanonicalHeight: height, CanonicalBestHash: hash, UpdatedAt: now}
 	for i := range nodes {
 		classify(&nodes[i], height, hash, now, time.Duration(inv.StaleThresholdSeconds)*time.Second)
@@ -498,6 +477,7 @@ func aggregate(inv Inventory, nodes []NodeStatus, now time.Time) Snapshot {
 				summary.Chain = n.Chain
 			}
 			summary.TotalPeerConnections += n.PeerCount
+			summary.ExternalPeerConnections += n.ExternalPeers
 			summary.MempoolTransactions += n.MempoolTransactions
 			summary.MempoolBytes += n.MempoolBytes
 			summary.MempoolUsage += n.MempoolUsage
@@ -525,6 +505,7 @@ func aggregate(inv Inventory, nodes []NodeStatus, now time.Time) Snapshot {
 		}
 	}
 	topology := buildTopology(inv, nodes)
+	summary.ManagedNodeLinks = len(topology.Edges)
 	economics := economics(inv.BlockRewardSats, inv.HalvingInterval, uint64(inv.BlockInterval), height)
 	return Snapshot{Network: summary, Nodes: nodes, Topology: topology, Economics: economics}
 }
@@ -654,18 +635,4 @@ func (p *poller) nodeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Error(w, "unknown node ID", http.StatusNotFound)
-}
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(true)
-	_ = enc.Encode(v)
-}
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		next.ServeHTTP(w, r)
-	})
 }
