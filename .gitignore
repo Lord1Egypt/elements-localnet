@@ -1,0 +1,6 @@
+.env
+generated/*
+!generated/.gitkeep
+legacy/
+*.log
+.DS_Store

@@ -1,0 +1,5 @@
+.git
+.env
+generated
+legacy
+*.log
